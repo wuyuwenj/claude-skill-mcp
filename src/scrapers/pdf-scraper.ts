@@ -3,8 +3,7 @@
  * Extracts text and structure from PDF files
  */
 
-// @ts-expect-error pdf-parse types
-import pdf from 'pdf-parse';
+import { PDFParse } from 'pdf-parse';
 import { Job, JobResult, PdfData, PdfSection, DocPage } from '../types.js';
 import { buildSkill } from '../skill-builder.js';
 
@@ -75,27 +74,39 @@ export async function scrapePdf(
  * Parse PDF and extract structured content
  */
 async function parsePdf(buffer: Buffer): Promise<PdfData> {
-    const data = await pdf(buffer);
+    const parser = new PDFParse({ data: buffer });
+
+    // Get text and info
+    const [textResult, infoResult] = await Promise.all([
+        parser.getText(),
+        parser.getInfo(),
+    ]);
+
+    const text = textResult.text;
+    const numPages = textResult.pages.length;
 
     // Extract metadata
     const metadata: Record<string, string> = {};
-    if (data.info) {
-        if (data.info.Title) metadata.Title = data.info.Title;
-        if (data.info.Author) metadata.Author = data.info.Author;
-        if (data.info.Subject) metadata.Subject = data.info.Subject;
-        if (data.info.Creator) metadata.Creator = data.info.Creator;
+    if (infoResult.info) {
+        if (infoResult.info.Title) metadata.Title = String(infoResult.info.Title);
+        if (infoResult.info.Author) metadata.Author = String(infoResult.info.Author);
+        if (infoResult.info.Subject) metadata.Subject = String(infoResult.info.Subject);
+        if (infoResult.info.Creator) metadata.Creator = String(infoResult.info.Creator);
     }
 
     // Extract title from metadata or first line
-    const title = metadata.Title ?? extractTitleFromContent(data.text);
+    const title = metadata.Title ?? extractTitleFromContent(text);
 
     // Split into sections
-    const sections = extractSections(data.text, data.numpages);
+    const sections = extractSections(text, numPages);
+
+    // Clean up
+    await parser.destroy();
 
     return {
         title,
-        content: data.text,
-        pages: data.numpages,
+        content: text,
+        pages: numPages,
         metadata,
         sections,
     };
