@@ -3,10 +3,13 @@
  * Extracts text and structure from PDF files
  */
 
-// @ts-expect-error pdf-parse v1.x types
-import pdf from 'pdf-parse/lib/pdf-parse.js';
+import { createRequire } from 'module';
 import { Job, JobResult, PdfData, PdfSection, DocPage } from '../types.js';
 import { buildSkill } from '../skill-builder.js';
+
+// Use createRequire for CommonJS pdf-parse module
+const require = createRequire(import.meta.url);
+const pdf = require('pdf-parse');
 
 /**
  * Scrape a PDF file
