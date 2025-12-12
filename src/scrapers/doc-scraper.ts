@@ -37,8 +37,8 @@ export async function scrapeDocumentation(
     const urlPatterns = generateUrlPatterns(startUrls, config.urlPatterns);
     log.info('URL patterns:', { urlPatterns });
 
-    // Create request queue
-    const requestQueue = await RequestQueue.open();
+    // Create a unique request queue for this job to avoid conflicts with previous runs
+    const requestQueue = await RequestQueue.open(`job-${job.id}`);
 
     // Add start URLs
     for (const url of startUrls) {

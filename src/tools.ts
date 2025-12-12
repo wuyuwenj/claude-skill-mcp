@@ -13,6 +13,10 @@ import { SkillConfig } from './types.js';
 import { createJob, getJob, getAllJobs } from './job-manager.js';
 import { estimatePageCount } from './scrapers/doc-scraper.js';
 import { listSkills, getSkill } from './skill-builder.js';
+import { generateSkillMdWithClaude, getSkillInstallPath, SkillType, createCloudSkill } from './openrouter.js';
+import { getAnthropicApiKey } from './main.js';
+import { Actor } from 'apify';
+import JSZip from 'jszip';
 
 /**
  * Register all MCP tools
@@ -572,5 +576,234 @@ export function registerTools(server: McpServer): void {
         }
     );
 
-    log.info('Registered 10 MCP tools');
+    // Tool 11: Install Skill
+    server.registerTool(
+        'install_skill',
+        {
+            description:
+                'Generate properly formatted Claude Code skill files ready for installation. Uses AI to create a well-structured SKILL.md with YAML frontmatter. For local skills (personal/project), returns files to save. For cloud skills, creates the skill directly in your Anthropic account.',
+            inputSchema: {
+                skillId: z.string().describe('Skill ID from a completed scraping job'),
+                skillType: z
+                    .enum(['personal', 'project', 'cloud'])
+                    .describe(
+                        'Where to install the skill: "personal" (~/.claude/skills/) for your own use across all projects, "project" (.claude/skills/) for team sharing via git, or "cloud" to create directly in your Anthropic account (requires X-Anthropic-Api-Key header)'
+                    ),
+            },
+        },
+        async ({ skillId, skillType }): Promise<CallToolResult> => {
+            log.info(`Installing skill: ${skillId} as ${skillType}`);
+
+            try {
+                // Get skill metadata
+                const skillMeta = await getSkill(skillId);
+                if (!skillMeta) {
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: JSON.stringify({
+                                    success: false,
+                                    error: `Skill ${skillId} not found`,
+                                }),
+                            },
+                        ],
+                    };
+                }
+
+                // Download and extract the skill ZIP
+                const zipBuffer = await Actor.getValue<Buffer>(skillId);
+                if (!zipBuffer) {
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: JSON.stringify({
+                                    success: false,
+                                    error: `Skill ZIP not found for ${skillId}`,
+                                }),
+                            },
+                        ],
+                    };
+                }
+
+                // Extract files from ZIP
+                const zip = await JSZip.loadAsync(zipBuffer);
+                const files: Array<{ path: string; content: string }> = [];
+                let sampleContent = '';
+
+                for (const [filename, file] of Object.entries(zip.files)) {
+                    if (!file.dir) {
+                        const content = await file.async('string');
+                        files.push({ path: filename, content });
+
+                        // Collect sample content for AI generation
+                        if (filename.endsWith('.md') && filename !== 'SKILL.md') {
+                            sampleContent += content.substring(0, 1500) + '\n\n';
+                        }
+                    }
+                }
+
+                // Get Apify token for OpenRouter
+                const apifyToken = process.env.APIFY_TOKEN;
+                let skillMdContent: string;
+
+                if (apifyToken) {
+                    // Generate proper SKILL.md with Claude via OpenRouter
+                    skillMdContent = await generateSkillMdWithClaude(
+                        skillMeta.name,
+                        skillMeta.description,
+                        skillMeta.downloadUrl,
+                        sampleContent,
+                        apifyToken
+                    );
+                } else {
+                    // Fallback: find existing SKILL.md or generate basic one
+                    const existingSkillMd = files.find((f) => f.path === 'SKILL.md');
+                    if (existingSkillMd) {
+                        // Add frontmatter to existing content
+                        const safeName = skillMeta.name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+                        skillMdContent = `---
+name: ${safeName}
+description: ${skillMeta.description}. Use when working with ${skillMeta.name}.
+---
+
+${existingSkillMd.content}`;
+                    } else {
+                        skillMdContent = `---
+name: ${skillMeta.name.toLowerCase().replace(/[^a-z0-9-]/g, '-')}
+description: ${skillMeta.description}. Use when working with ${skillMeta.name}.
+---
+
+# ${skillMeta.name}
+
+${skillMeta.description}
+
+## References
+
+See the reference files for complete documentation.
+`;
+                    }
+                }
+
+                // Prepare output files (SKILL.md + reference files)
+                const outputFiles: Array<{ path: string; content: string }> = [
+                    { path: 'SKILL.md', content: skillMdContent },
+                ];
+
+                // Add reference files (exclude old SKILL.md, flatten references/ directory)
+                for (const file of files) {
+                    if (file.path !== 'SKILL.md') {
+                        // Flatten path: references/general.md -> general.md
+                        const flatPath = file.path.replace(/^references\//, '');
+                        outputFiles.push({ path: flatPath, content: file.content });
+                    }
+                }
+
+                // Handle cloud skill creation
+                if (skillType === 'cloud') {
+                    const anthropicApiKey = getAnthropicApiKey();
+
+                    if (!anthropicApiKey) {
+                        return {
+                            content: [
+                                {
+                                    type: 'text',
+                                    text: JSON.stringify({
+                                        success: false,
+                                        error: 'Cloud skill creation requires an Anthropic API key. Add the MCP server with: claude mcp add --transport http skill-seekers URL --header "Authorization: Bearer APIFY_TOKEN" --header "X-Anthropic-Api-Key: YOUR_ANTHROPIC_API_KEY"',
+                                    }),
+                                },
+                            ],
+                        };
+                    }
+
+                    try {
+                        const cloudSkill = await createCloudSkill(
+                            skillMeta.name,
+                            skillMeta.name, // display_title
+                            outputFiles,
+                            anthropicApiKey
+                        );
+
+                        return {
+                            content: [
+                                {
+                                    type: 'text',
+                                    text: JSON.stringify(
+                                        {
+                                            success: true,
+                                            skillId: cloudSkill.id,
+                                            skillName: skillMeta.name,
+                                            skillType: 'cloud',
+                                            cloudSkillId: cloudSkill.id,
+                                            cloudSkillVersion: cloudSkill.latestVersion,
+                                            message: `Cloud skill "${skillMeta.name}" created successfully! It is now available in your Anthropic account and can be used across all your Claude interactions.`,
+                                        },
+                                        null,
+                                        2
+                                    ),
+                                },
+                            ],
+                        };
+                    } catch (error) {
+                        log.error(`Failed to create cloud skill: ${error}`);
+                        return {
+                            content: [
+                                {
+                                    type: 'text',
+                                    text: JSON.stringify({
+                                        success: false,
+                                        error: `Failed to create cloud skill: ${error instanceof Error ? error.message : String(error)}`,
+                                    }),
+                                },
+                            ],
+                        };
+                    }
+                }
+
+                // For local skills (personal/project), return files
+                const installPath = getSkillInstallPath(skillType as SkillType, skillMeta.name);
+
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: JSON.stringify(
+                                {
+                                    success: true,
+                                    skillId,
+                                    skillName: skillMeta.name,
+                                    skillType,
+                                    installPath,
+                                    files: outputFiles.map((f) => ({
+                                        path: f.path,
+                                        content: f.content,
+                                    })),
+                                    instructions: `To install this skill, create the directory "${installPath}" and save the files there. The SKILL.md file contains the main skill with YAML frontmatter, and the other files are reference documentation.`,
+                                },
+                                null,
+                                2
+                            ),
+                        },
+                    ],
+                };
+            } catch (error) {
+                log.error(`Failed to install skill: ${error}`);
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: false,
+                                error: error instanceof Error ? error.message : String(error),
+                            }),
+                        },
+                    ],
+                };
+            }
+        }
+    );
+
+    log.info('Registered 11 MCP tools');
 }

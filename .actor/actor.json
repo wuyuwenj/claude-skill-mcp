@@ -3,7 +3,7 @@
 	"name": "skill-seekers-mcp",
 	"title": "Skill Seekers MCP Server",
 	"description": "MCP server for creating Claude AI skills from documentation websites, GitHub repositories, and PDF files.",
-	"version": "1.0.0",
+	"version": "1.0",
 	"buildTag": "latest",
 	"usesStandbyMode": true,
 	"meta": {

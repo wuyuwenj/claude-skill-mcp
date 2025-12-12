@@ -1,0 +1,277 @@
+/**
+ * OpenRouter Integration
+ * Uses Apify's OpenRouter proxy to generate proper SKILL.md files with Claude
+ */
+
+import { log } from 'apify';
+
+const OPENROUTER_BASE_URL = 'https://openrouter.apify.actor/api/v1';
+
+interface ChatMessage {
+    role: 'system' | 'user' | 'assistant';
+    content: string;
+}
+
+interface OpenRouterResponse {
+    choices: Array<{
+        message: {
+            content: string;
+        };
+    }>;
+}
+
+/**
+ * Call OpenRouter API with Claude model
+ */
+async function callOpenRouter(
+    messages: ChatMessage[],
+    apifyToken: string,
+    model: string = 'anthropic/claude-sonnet-4'
+): Promise<string> {
+    const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apifyToken}`,
+        },
+        body: JSON.stringify({
+            model,
+            messages,
+            max_tokens: 4096,
+        }),
+    });
+
+    if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`OpenRouter API error: ${response.status} - ${error}`);
+    }
+
+    const data = (await response.json()) as OpenRouterResponse;
+    return data.choices[0]?.message?.content ?? '';
+}
+
+/**
+ * Generate a proper SKILL.md with YAML frontmatter using Claude
+ */
+export async function generateSkillMdWithClaude(
+    name: string,
+    description: string,
+    sourceUrl: string,
+    sampleContent: string,
+    apifyToken: string
+): Promise<string> {
+    log.info(`Generating SKILL.md with Claude for: ${name}`);
+
+    const systemPrompt = `You are an expert at creating Claude Code Agent Skills. Your task is to generate a well-structured SKILL.md file with proper YAML frontmatter.
+
+The SKILL.md file must follow this format:
+1. Start with YAML frontmatter containing:
+   - name: lowercase, alphanumeric with hyphens only (max 64 chars)
+   - description: Clear description of what the skill does AND when to use it (max 1024 chars)
+
+2. The markdown content should include:
+   - A title (# heading)
+   - Brief overview
+   - Quick start section with essential code examples
+   - Key concepts section
+   - References to additional files (general.md, examples.md)
+   - Source URL
+
+The description in the frontmatter is CRITICAL - it must clearly state:
+- WHAT the skill does
+- WHEN Claude should use it (trigger phrases, file types, use cases)
+
+Example format:
+\`\`\`
+---
+name: my-skill-name
+description: Description of what this does. Use when working with X, Y, or Z.
+---
+
+# My Skill Name
+
+Brief overview...
+
+## Quick Start
+...code examples...
+
+## Key Concepts
+...
+
+## References
+- [General Documentation](general.md)
+- [Code Examples](examples.md)
+
+## Source
+[URL](URL)
+\`\`\``;
+
+    const userPrompt = `Generate a SKILL.md file for the following documentation:
+
+**Name:** ${name}
+**Description:** ${description}
+**Source URL:** ${sourceUrl}
+
+**Sample Content from Documentation:**
+${sampleContent.substring(0, 3000)}
+
+Generate a complete SKILL.md with:
+1. Proper YAML frontmatter with name and description (description should include trigger phrases for when Claude should use this skill)
+2. A clear, concise overview
+3. Quick start section with the most important code examples
+4. Key concepts section
+5. References section pointing to general.md and examples.md
+6. Source URL
+
+Return ONLY the SKILL.md content, no explanation.`;
+
+    try {
+        const result = await callOpenRouter(
+            [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt },
+            ],
+            apifyToken
+        );
+
+        // Validate the result has proper frontmatter
+        if (!result.startsWith('---')) {
+            log.warning('Generated content missing frontmatter, adding default');
+            return generateFallbackSkillMd(name, description, sourceUrl);
+        }
+
+        return result;
+    } catch (error) {
+        log.error(`Failed to generate SKILL.md with Claude: ${error}`);
+        // Fall back to template-based generation
+        return generateFallbackSkillMd(name, description, sourceUrl);
+    }
+}
+
+/**
+ * Fallback SKILL.md generation without AI
+ */
+function generateFallbackSkillMd(name: string, description: string, sourceUrl: string): string {
+    const safeName = name.toLowerCase().replace(/[^a-z0-9-]/g, '-').substring(0, 64);
+    const safeDescription = description.substring(0, 1024);
+
+    return `---
+name: ${safeName}
+description: ${safeDescription}. Use when working with ${name} or related technologies.
+---
+
+# ${name}
+
+${description}
+
+## Overview
+
+This skill contains documentation for ${name}, automatically generated from documentation scraping.
+
+## Quick Start
+
+See the reference documentation for code examples and getting started guides.
+
+## References
+
+- [General Documentation](general.md) - Complete documentation
+- [Code Examples](examples.md) - Code snippets and examples
+
+## Source
+
+[${sourceUrl}](${sourceUrl})
+
+---
+
+*Generated by Skill Seekers MCP Server*
+`;
+}
+
+/**
+ * Skill installation types
+ */
+export type SkillType = 'personal' | 'project' | 'cloud';
+
+/**
+ * Get the installation path for a skill type
+ */
+export function getSkillInstallPath(skillType: SkillType, skillName: string): string {
+    const safeName = skillName.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+
+    if (skillType === 'personal') {
+        return `~/.claude/skills/${safeName}`;
+    } else if (skillType === 'project') {
+        return `.claude/skills/${safeName}`;
+    } else {
+        return `cloud://anthropic.com/skills/${safeName}`;
+    }
+}
+
+/**
+ * Create a cloud skill using the Anthropic API
+ * Uses direct HTTP calls since the SDK beta.skills API may not be available
+ */
+export async function createCloudSkill(
+    skillName: string,
+    displayTitle: string,
+    files: Array<{ path: string; content: string }>,
+    anthropicApiKey: string
+): Promise<{ id: string; latestVersion: string }> {
+    log.info(`Creating cloud skill: ${skillName}`);
+
+    // Create a FormData-like structure for multipart upload
+    const boundary = '----SkillSeekersFormBoundary' + Math.random().toString(36).substring(2);
+
+    // Build multipart form data body
+    const parts: string[] = [];
+
+    // Add display_title field
+    parts.push(`--${boundary}`);
+    parts.push('Content-Disposition: form-data; name="display_title"');
+    parts.push('');
+    parts.push(displayTitle);
+
+    // Add files
+    for (const file of files) {
+        const fileName = `${skillName}/${file.path}`;
+        parts.push(`--${boundary}`);
+        parts.push(`Content-Disposition: form-data; name="files"; filename="${fileName}"`);
+        parts.push('Content-Type: text/markdown');
+        parts.push('');
+        parts.push(file.content);
+    }
+
+    parts.push(`--${boundary}--`);
+
+    const body = parts.join('\r\n');
+
+    const response = await fetch('https://api.anthropic.com/v1/skills', {
+        method: 'POST',
+        headers: {
+            'x-api-key': anthropicApiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-beta': 'skills-2025-01-01',
+            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        },
+        body,
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Anthropic API error: ${response.status} - ${errorText}`);
+    }
+
+    const skill = (await response.json()) as {
+        id: string;
+        latest_version: string;
+        display_title: string;
+        type: string;
+    };
+
+    log.info(`Cloud skill created: ${skill.id}`);
+
+    return {
+        id: skill.id,
+        latestVersion: skill.latest_version,
+    };
+}

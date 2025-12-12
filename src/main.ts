@@ -35,6 +35,24 @@ if (githubToken) {
     process.env.GITHUB_TOKEN = githubToken;
 }
 
+// Global storage for request-scoped Anthropic API key
+// (Apify actors are single-tenant, so this is safe)
+let currentAnthropicApiKey: string | undefined;
+
+/**
+ * Get the current Anthropic API key (set from request headers)
+ */
+export function getAnthropicApiKey(): string | undefined {
+    return currentAnthropicApiKey;
+}
+
+/**
+ * Set the Anthropic API key for the current request
+ */
+export function setAnthropicApiKey(key: string | undefined): void {
+    currentAnthropicApiKey = key;
+}
+
 // Initialize job manager
 initJobManager({ maxConcurrentJobs });
 
@@ -134,8 +152,9 @@ app.get('/', (req: Request, res: Response) => {
     const webServerUrl = process.env.ACTOR_WEB_SERVER_URL;
     const mcpUrl = webServerUrl ? `${webServerUrl}/mcp` : 'http://localhost:3000/mcp';
 
-    // Generate CLI command
-    const cliCommand = `claude mcp add --transport http skill-seekers ${mcpUrl} --header "Authorization: Bearer YOUR_APIFY_TOKEN"`;
+    // Generate CLI commands
+    const cliCommandBasic = `claude mcp add --transport http skill-seekers ${mcpUrl} --header "Authorization: Bearer YOUR_APIFY_TOKEN"`;
+    const cliCommandWithCloud = `claude mcp add --transport http skill-seekers ${mcpUrl} --header "Authorization: Bearer YOUR_APIFY_TOKEN" --header "X-Anthropic-Api-Key: YOUR_ANTHROPIC_API_KEY"`;
 
     res.json({
         status: 'running',
@@ -153,9 +172,11 @@ app.get('/', (req: Request, res: Response) => {
             'list_skills',
             'get_skill',
             'list_configs',
+            'install_skill',
         ],
         mcp_endpoint: mcpUrl,
-        cli_command: cliCommand,
+        cli_command: cliCommandBasic,
+        cli_command_with_cloud: cliCommandWithCloud,
         settings: {
             maxConcurrentJobs,
             defaultMaxPages,
@@ -163,20 +184,25 @@ app.get('/', (req: Request, res: Response) => {
         },
         setup_instructions: {
             step1: 'Get your Apify API token from https://console.apify.com/account/integrations',
-            step2: 'Copy and run the command above, replacing YOUR_APIFY_TOKEN with your actual token',
-            step3: 'Restart Claude Code to load the new MCP server',
+            step2: 'Copy and run the CLI command above, replacing YOUR_APIFY_TOKEN with your actual token',
+            step3: '(Optional) For cloud skill creation, also add your Anthropic API key using the cli_command_with_cloud',
+            step4: 'Restart Claude Code to load the new MCP server',
         },
         usage_example: {
-            step1: 'Use generate_config to create a config for your docs',
-            step2: 'Use scrape_docs with the config to start scraping',
-            step3: 'Use get_job_status to check progress',
-            step4: 'Use get_skill to download the generated skill',
+            step1: 'Use scrape_docs to scrape documentation (returns job ID)',
+            step2: 'Use get_job_status to check progress (returns skill ID when complete)',
+            step3: 'Use install_skill with skillId and skillType (personal/project/cloud)',
+            step4: 'For local skills, save the returned files. For cloud skills, skill is created automatically.',
         },
     });
 });
 
 // MCP endpoint
 app.post('/mcp', async (req: Request, res: Response) => {
+    // Extract Anthropic API key from headers (for cloud skill creation)
+    const anthropicApiKey = req.headers['x-anthropic-api-key'] as string | undefined;
+    setAnthropicApiKey(anthropicApiKey);
+
     const server = getServer();
 
     try {
@@ -275,10 +301,19 @@ app.listen(PORT, (error) => {
 
     log.info('='.repeat(80));
     log.info('To add this MCP server to Claude Code, run:');
+    log.info('');
+    log.info('Basic (local skills only):');
     log.info(
         `claude mcp add --transport http skill-seekers ${mcpUrl} --header "Authorization: Bearer YOUR_APIFY_TOKEN"`
     );
+    log.info('');
+    log.info('With cloud skill support (requires Anthropic API key):');
+    log.info(
+        `claude mcp add --transport http skill-seekers ${mcpUrl} --header "Authorization: Bearer YOUR_APIFY_TOKEN" --header "X-Anthropic-Api-Key: YOUR_ANTHROPIC_API_KEY"`
+    );
+    log.info('');
     log.info('Replace YOUR_APIFY_TOKEN with your token from: https://console.apify.com/account/integrations');
+    log.info('Replace YOUR_ANTHROPIC_API_KEY with your key from: https://console.anthropic.com/settings/keys');
     log.info('='.repeat(80));
 });
 
