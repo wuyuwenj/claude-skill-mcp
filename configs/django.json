@@ -1,0 +1,41 @@
+{
+  "name": "django",
+  "description": "Django high-level Python web framework. Use for Django models, views, templates, ORM, and full-stack Python development.",
+  "baseUrl": "https://docs.djangoproject.com/en/5.0/",
+  "startUrls": [
+    "https://docs.djangoproject.com/en/5.0/intro/",
+    "https://docs.djangoproject.com/en/5.0/topics/",
+    "https://docs.djangoproject.com/en/5.0/ref/"
+  ],
+  "selectors": {
+    "mainContent": "#docs-content",
+    "title": "h1",
+    "codeBlocks": "pre"
+  },
+  "urlPatterns": {
+    "include": ["**/intro/**", "**/topics/**", "**/ref/**", "**/howto/**"],
+    "exclude": ["**/releases/**", "**/internals/**"]
+  },
+  "categories": {
+    "getting_started": {
+      "patterns": ["intro", "tutorial", "install"]
+    },
+    "models": {
+      "patterns": ["models", "db", "queries", "orm"]
+    },
+    "views": {
+      "patterns": ["views", "class-based", "http"]
+    },
+    "templates": {
+      "patterns": ["templates", "template"]
+    },
+    "forms": {
+      "patterns": ["forms", "form", "validation"]
+    },
+    "admin": {
+      "patterns": ["admin", "contrib"]
+    }
+  },
+  "rateLimit": 0.5,
+  "maxPages": 300
+}

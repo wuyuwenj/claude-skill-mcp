@@ -1,0 +1,42 @@
+{
+  "name": "tailwind",
+  "description": "Tailwind CSS utility-first CSS framework. Use for Tailwind classes, responsive design, theming, and modern CSS styling.",
+  "baseUrl": "https://tailwindcss.com/",
+  "startUrls": [
+    "https://tailwindcss.com/docs/installation",
+    "https://tailwindcss.com/docs/utility-first",
+    "https://tailwindcss.com/docs/responsive-design",
+    "https://tailwindcss.com/docs/hover-focus-and-other-states"
+  ],
+  "selectors": {
+    "mainContent": "article",
+    "title": "h1",
+    "codeBlocks": "pre code"
+  },
+  "urlPatterns": {
+    "include": ["**/docs/**"],
+    "exclude": ["**/blog/**", "**/showcase/**"]
+  },
+  "categories": {
+    "getting_started": {
+      "patterns": ["installation", "editor-setup", "using-with"]
+    },
+    "layout": {
+      "patterns": ["layout", "container", "columns", "flexbox", "grid", "box"]
+    },
+    "spacing": {
+      "patterns": ["spacing", "padding", "margin"]
+    },
+    "sizing": {
+      "patterns": ["sizing", "width", "height"]
+    },
+    "typography": {
+      "patterns": ["font", "text", "typography"]
+    },
+    "colors": {
+      "patterns": ["color", "background", "border", "opacity"]
+    }
+  },
+  "rateLimit": 0.5,
+  "maxPages": 200
+}

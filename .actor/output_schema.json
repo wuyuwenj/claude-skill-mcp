@@ -1,0 +1,32 @@
+{
+	"actorOutputSchemaVersion": 1,
+	"fields": {
+		"mcpUrl": {
+			"type": "string",
+			"title": "MCP Endpoint URL",
+			"description": "The URL to connect to the MCP server"
+		},
+		"claudeCommand": {
+			"type": "string",
+			"title": "Claude CLI Command",
+			"description": "Ready-to-run command for adding this MCP server to Claude Code"
+		},
+		"apifyTokenInfo": {
+			"type": "string",
+			"title": "API Token Info",
+			"description": "Link to get your Apify API token"
+		}
+	},
+	"views": {
+		"overview": {
+			"title": "Skill Seekers MCP Server",
+			"description": "Connect Claude Code to this MCP server to create AI skills from documentation",
+			"transformation": {
+				"fields": ["mcpUrl", "claudeCommand", "apifyTokenInfo"]
+			},
+			"display": {
+				"component": "table"
+			}
+		}
+	}
+}

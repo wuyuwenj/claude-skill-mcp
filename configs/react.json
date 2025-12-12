@@ -1,0 +1,41 @@
+{
+  "name": "react",
+  "description": "React framework for building user interfaces. Use for React components, hooks, state management, JSX, and modern frontend development.",
+  "baseUrl": "https://react.dev/",
+  "startUrls": [
+    "https://react.dev/learn",
+    "https://react.dev/learn/quick-start",
+    "https://react.dev/learn/thinking-in-react",
+    "https://react.dev/reference/react",
+    "https://react.dev/reference/react-dom",
+    "https://react.dev/reference/react/hooks"
+  ],
+  "selectors": {
+    "mainContent": "article",
+    "title": "h1",
+    "codeBlocks": "pre code"
+  },
+  "urlPatterns": {
+    "include": ["**/learn/**", "**/reference/**"],
+    "exclude": ["**/community/**", "**/blog/**"]
+  },
+  "categories": {
+    "getting_started": {
+      "patterns": ["quick-start", "installation", "tutorial"]
+    },
+    "hooks": {
+      "patterns": ["usestate", "useeffect", "usememo", "usecallback", "usecontext", "useref", "hook"]
+    },
+    "components": {
+      "patterns": ["component", "props", "jsx"]
+    },
+    "state": {
+      "patterns": ["state", "context", "reducer"]
+    },
+    "api": {
+      "patterns": ["api", "reference"]
+    }
+  },
+  "rateLimit": 0.5,
+  "maxPages": 300
+}

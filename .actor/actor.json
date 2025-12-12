@@ -1,0 +1,53 @@
+{
+	"actorSpecification": 1,
+	"name": "skill-seekers-mcp",
+	"title": "Skill Seekers MCP Server",
+	"description": "MCP server for creating Claude AI skills from documentation websites, GitHub repositories, and PDF files.",
+	"version": "1.0.0",
+	"buildTag": "latest",
+	"usesStandbyMode": true,
+	"meta": {
+		"templateId": "ts-mcp-skill-seekers"
+	},
+	"input": {
+		"title": "Skill Seekers MCP Configuration",
+		"description": "Configure the Skill Seekers MCP server",
+		"type": "object",
+		"schemaVersion": 1,
+		"properties": {
+			"githubToken": {
+				"title": "GitHub Token",
+				"type": "string",
+				"description": "GitHub personal access token for accessing private repos and higher rate limits. Get one from https://github.com/settings/tokens",
+				"editor": "textfield",
+				"isSecret": true
+			},
+			"anthropicApiKey": {
+				"title": "Anthropic API Key",
+				"type": "string",
+				"description": "Anthropic API key for automatic skill uploads. Get one from https://console.anthropic.com/",
+				"editor": "textfield",
+				"isSecret": true
+			},
+			"maxConcurrentJobs": {
+				"title": "Max Concurrent Jobs",
+				"type": "integer",
+				"description": "Maximum number of scraping jobs that can run simultaneously",
+				"default": 3,
+				"minimum": 1,
+				"maximum": 10
+			},
+			"defaultMaxPages": {
+				"title": "Default Max Pages",
+				"type": "integer",
+				"description": "Default maximum pages to scrape per job",
+				"default": 100,
+				"minimum": 1,
+				"maximum": 10000
+			}
+		},
+		"required": []
+	},
+	"dockerfile": "../Dockerfile",
+	"webServerMcpPath": "/mcp"
+}
