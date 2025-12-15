@@ -5,7 +5,7 @@
 
 import { CheerioCrawler, RequestQueue } from 'crawlee';
 import { log } from 'apify';
-import { DocPage, SkillConfig, Job, JobResult } from '../types.js';
+import { DocPage, SkillConfig, Job, JobResult, CodeBlock } from '../types.js';
 import { buildSkill } from '../skill-builder.js';
 
 // Use any for cheerio types to avoid conflicts between crawlee's cheerio and standalone cheerio
@@ -63,7 +63,7 @@ export async function scrapeDocumentation(
             const selectors = config.selectors ?? {};
             const title = extractTitle($, selectors.title);
             const content = extractContent($, selectors.mainContent, selectors.exclude);
-            const codeExamples = extractCodeBlocks($, selectors.codeBlocks);
+            const { codeExamples, codeBlocks } = extractCodeBlocks($, selectors.codeBlocks);
 
             // Skip empty pages
             if (!title || content.length < 50) {
@@ -89,6 +89,7 @@ export async function scrapeDocumentation(
                 searchableText: `${title} ${content}`.toLowerCase(),
                 category,
                 codeExamples,
+                codeBlocks,
             };
 
             // Extract API reference if applicable
@@ -228,20 +229,194 @@ function cleanContent(content: string): string {
 }
 
 /**
- * Extract code blocks from page
+ * Extract code blocks from page with language detection
  */
-function extractCodeBlocks($: CheerioAPI, selector?: string): string[] {
+function extractCodeBlocks($: CheerioAPI, selector?: string): { codeExamples: string[]; codeBlocks: CodeBlock[] } {
     const codeSelector = selector ?? 'pre code, pre, .highlight code';
-    const blocks: string[] = [];
+    const codeExamples: string[] = [];
+    const codeBlocks: CodeBlock[] = [];
 
     $(codeSelector).each((_: number, el: any) => {
-        const code = $(el).text().trim();
-        if (code && code.length > 10) {
-            blocks.push(code);
-        }
+        const $el = $(el);
+        const code = $el.text().trim();
+        if (!code || code.length < 10) return;
+
+        // Keep simple string array for backwards compatibility
+        codeExamples.push(code);
+
+        // Extract language from class attribute
+        const language = detectLanguage($el, $);
+
+        // Detect filename from code block header or class
+        const filename = detectFilename($el, $, code, language);
+
+        // Check if this is a complete script
+        const isScript = isCompleteScript(code, language);
+
+        // Check if this contains template placeholders
+        const isTemplate = isTemplateCode(code);
+
+        // Get title from nearby heading
+        const title = findCodeTitle($el, $);
+
+        codeBlocks.push({
+            code,
+            language,
+            filename,
+            isScript,
+            isTemplate,
+            title,
+        });
     });
 
-    return blocks;
+    return { codeExamples, codeBlocks };
+}
+
+/**
+ * Detect programming language from element classes
+ */
+function detectLanguage($el: any, _$: CheerioAPI): string | undefined {
+    // Check element and parent for language class
+    const classAttr = $el.attr('class') || $el.parent().attr('class') || '';
+
+    // Common patterns: language-python, lang-python, python, highlight-python
+    const langMatch = classAttr.match(/(?:language-|lang-|highlight-)?(\w+)/);
+    if (langMatch) {
+        const lang = langMatch[1].toLowerCase();
+        // Map common language names
+        const langMap: Record<string, string> = {
+            'py': 'python',
+            'js': 'javascript',
+            'ts': 'typescript',
+            'sh': 'bash',
+            'shell': 'bash',
+            'zsh': 'bash',
+            'yml': 'yaml',
+            'dockerfile': 'docker',
+        };
+        return langMap[lang] || lang;
+    }
+
+    // Check data attributes
+    const dataLang = $el.attr('data-language') || $el.attr('data-lang');
+    if (dataLang) return dataLang.toLowerCase();
+
+    return undefined;
+}
+
+/**
+ * Detect filename from code block context
+ */
+function detectFilename($el: any, _$: CheerioAPI, code: string, language?: string): string | undefined {
+    // Check for filename in nearby elements
+    const prevText = $el.parent().prev().text().trim();
+    const filenameMatch = prevText.match(/([a-zA-Z0-9_-]+\.[a-zA-Z0-9]+)/);
+    if (filenameMatch) return filenameMatch[1];
+
+    // Check for shebang to determine extension
+    if (code.startsWith('#!/')) {
+        if (code.includes('/python')) return 'script.py';
+        if (code.includes('/bash') || code.includes('/sh')) return 'script.sh';
+        if (code.includes('/node')) return 'script.js';
+    }
+
+    // Infer from language
+    if (language) {
+        const extMap: Record<string, string> = {
+            'python': '.py',
+            'javascript': '.js',
+            'typescript': '.ts',
+            'bash': '.sh',
+            'ruby': '.rb',
+            'go': '.go',
+            'rust': '.rs',
+            'java': '.java',
+            'yaml': '.yaml',
+            'json': '.json',
+            'docker': 'Dockerfile',
+        };
+        if (extMap[language]) {
+            return `script${extMap[language]}`;
+        }
+    }
+
+    return undefined;
+}
+
+/**
+ * Determine if code is a complete runnable script
+ */
+function isCompleteScript(code: string, language?: string): boolean {
+    // Has shebang
+    if (code.startsWith('#!/')) return true;
+
+    // Python: has if __name__ == "__main__" or complete function definitions
+    if (language === 'python') {
+        if (code.includes('if __name__')) return true;
+        if (code.includes('def main(')) return true;
+        // Multiple function definitions suggest a complete script
+        const defCount = (code.match(/^def \w+\(/gm) || []).length;
+        if (defCount >= 2) return true;
+    }
+
+    // Bash: has multiple commands or function definitions
+    if (language === 'bash' || language === 'sh') {
+        const lines = code.split('\n').filter(l => l.trim() && !l.trim().startsWith('#'));
+        if (lines.length >= 5) return true;
+    }
+
+    // JavaScript/TypeScript: has exports or is a complete module
+    if (language === 'javascript' || language === 'typescript') {
+        if (code.includes('export ') || code.includes('module.exports')) return true;
+        if (code.includes('async function') && code.length > 200) return true;
+    }
+
+    // Code is long enough to be a complete script
+    if (code.split('\n').length >= 20) return true;
+
+    return false;
+}
+
+/**
+ * Detect if code contains template placeholders
+ */
+function isTemplateCode(code: string): boolean {
+    // Mustache/Handlebars style: {{variable}}
+    if (/\{\{[^}]+\}\}/.test(code)) return true;
+
+    // Jinja/Django style: {% %} or {{ }}
+    if (/\{%[^%]+%\}/.test(code)) return true;
+
+    // Placeholder patterns: <YOUR_VALUE>, [YOUR_VALUE], YOUR_API_KEY, etc.
+    if (/<[A-Z_]+>/.test(code)) return true;
+    if (/\[[A-Z_]+\]/.test(code)) return true;
+    if (/YOUR_[A-Z_]+/.test(code)) return true;
+    if (/\$\{[^}]+\}/.test(code)) return true;  // ${variable}
+
+    // Config file patterns with placeholders
+    if (/: <[^>]+>/.test(code)) return true;  // yaml: <value>
+    if (/= "<[^>]+"/.test(code)) return true;  // var = "<value>"
+
+    return false;
+}
+
+/**
+ * Find title for code block from nearby heading
+ */
+function findCodeTitle($el: any, _$: CheerioAPI): string | undefined {
+    // Check previous siblings for heading
+    const prev = $el.parent().prevAll('h1, h2, h3, h4, h5, h6').first();
+    if (prev.length) {
+        return prev.text().trim();
+    }
+
+    // Check parent's previous sibling
+    const parentPrev = $el.parent().parent().prevAll('h1, h2, h3, h4, h5, h6').first();
+    if (parentPrev.length) {
+        return parentPrev.text().trim();
+    }
+
+    return undefined;
 }
 
 /**

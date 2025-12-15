@@ -6,7 +6,7 @@
 import { Actor, log } from 'apify';
 import archiver from 'archiver';
 import { v4 as uuidv4 } from 'uuid';
-import { DocPage, SkillPackage, SkillFile, JobType } from './types.js';
+import { DocPage, SkillPackage, SkillFile, JobType, CodeBlock } from './types.js';
 
 /**
  * Build a skill package from documentation pages
@@ -35,37 +35,46 @@ export async function buildSkill(
     // Group docs by category
     const categories = groupByCategory(docs);
 
-    // Generate reference files for each category
-    for (const [category, categoryDocs] of Object.entries(categories)) {
-        const fileName = `references/${sanitizeFileName(category)}.md`;
-        const content = generateCategoryFile(category, categoryDocs);
-        files.push({
-            path: fileName,
-            content,
-            size: content.length,
-        });
-    }
-
-    // Generate API reference if there are API docs
+    // Generate single reference.md combining all categories and API docs
     const apiDocs = docs.filter((d) => d.type === 'api');
-    if (apiDocs.length > 0) {
-        const apiContent = generateApiReference(apiDocs);
+    const referenceContent = generateReferenceFile(categories, apiDocs);
+    if (referenceContent) {
         files.push({
-            path: 'references/api-reference.md',
-            content: apiContent,
-            size: apiContent.length,
+            path: 'reference.md',
+            content: referenceContent,
+            size: referenceContent.length,
         });
     }
 
-    // Generate examples file if there are example docs
+    // Generate examples.md at root level
     const exampleDocs = docs.filter((d) => d.type === 'example' || (d.codeExamples && d.codeExamples.length > 0));
     if (exampleDocs.length > 0) {
         const examplesContent = generateExamplesFile(exampleDocs);
         files.push({
-            path: 'references/examples.md',
+            path: 'examples.md',
             content: examplesContent,
             size: examplesContent.length,
         });
+    }
+
+    // Collect all code blocks from docs
+    const allCodeBlocks: CodeBlock[] = [];
+    for (const doc of docs) {
+        if (doc.codeBlocks) {
+            allCodeBlocks.push(...doc.codeBlocks);
+        }
+    }
+
+    // Generate scripts/ directory for complete runnable scripts
+    const scriptFiles = generateScriptsDirectory(allCodeBlocks);
+    for (const scriptFile of scriptFiles) {
+        files.push(scriptFile);
+    }
+
+    // Generate templates/ directory for template files
+    const templateFiles = generateTemplatesDirectory(allCodeBlocks);
+    for (const templateFile of templateFiles) {
+        files.push(templateFile);
     }
 
     // Calculate stats
@@ -219,94 +228,200 @@ function groupByCategory(docs: DocPage[]): Record<string, DocPage[]> {
 }
 
 /**
- * Sanitize file name
+ * Generate combined reference.md file with all categories and API docs
  */
-function sanitizeFileName(name: string): string {
-    return name
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-|-$/g, '');
-}
-
-/**
- * Generate category reference file
- */
-function generateCategoryFile(category: string, docs: DocPage[]): string {
-    const lines: string[] = [
-        `# ${category.charAt(0).toUpperCase() + category.slice(1)}`,
-        '',
-        `*${docs.length} pages in this category*`,
-        '',
-    ];
-
-    for (const doc of docs) {
-        lines.push(`## ${doc.title}`, '');
-
-        if (doc.url) {
-            lines.push(`*Source: ${doc.url}*`, '');
-        }
-
-        lines.push(doc.content, '');
-
-        if (doc.codeExamples && doc.codeExamples.length > 0) {
-            lines.push('### Code Examples', '');
-            for (const example of doc.codeExamples.slice(0, 3)) {
-                lines.push('```', example, '```', '');
-            }
-        }
-
-        lines.push('---', '');
+function generateReferenceFile(categories: Record<string, DocPage[]>, apiDocs: DocPage[]): string | null {
+    const allDocs = Object.values(categories).flat();
+    if (allDocs.length === 0 && apiDocs.length === 0) {
+        return null;
     }
 
-    return lines.join('\n');
-}
-
-/**
- * Generate API reference file
- */
-function generateApiReference(apiDocs: DocPage[]): string {
     const lines: string[] = [
-        '# API Reference',
-        '',
-        `*${apiDocs.length} API entries*`,
+        '# Reference Documentation',
         '',
     ];
 
-    for (const doc of apiDocs) {
-        lines.push(`## ${doc.title}`, '');
+    // Add each category section
+    for (const [category, categoryDocs] of Object.entries(categories)) {
+        lines.push(`## ${category.charAt(0).toUpperCase() + category.slice(1)}`, '');
+        lines.push(`*${categoryDocs.length} pages in this section*`, '');
 
-        if (doc.apiReference) {
-            if (doc.apiReference.signature) {
-                lines.push('```', doc.apiReference.signature, '```', '');
+        for (const doc of categoryDocs) {
+            lines.push(`### ${doc.title}`, '');
+
+            if (doc.url) {
+                lines.push(`*Source: ${doc.url}*`, '');
             }
 
-            if (doc.apiReference.parameters && doc.apiReference.parameters.length > 0) {
-                lines.push('### Parameters', '');
-                for (const param of doc.apiReference.parameters) {
-                    lines.push(`- ${param}`);
+            lines.push(doc.content, '');
+
+            if (doc.codeExamples && doc.codeExamples.length > 0) {
+                lines.push('#### Code Examples', '');
+                for (const example of doc.codeExamples.slice(0, 3)) {
+                    lines.push('```', example, '```', '');
                 }
-                lines.push('');
             }
 
-            if (doc.apiReference.returns) {
-                lines.push(`**Returns:** ${doc.apiReference.returns}`, '');
-            }
-
-            if (doc.apiReference.example) {
-                lines.push('### Example', '', '```', doc.apiReference.example, '```', '');
-            }
+            lines.push('---', '');
         }
+    }
 
-        lines.push(doc.content.substring(0, 500), '');
+    // Add API Reference section if there are API docs
+    if (apiDocs.length > 0) {
+        lines.push('## API Reference', '');
+        lines.push(`*${apiDocs.length} API entries*`, '');
 
-        if (doc.url) {
-            lines.push(`*See: ${doc.url}*`, '');
+        for (const doc of apiDocs) {
+            lines.push(`### ${doc.title}`, '');
+
+            if (doc.apiReference) {
+                if (doc.apiReference.signature) {
+                    lines.push('```', doc.apiReference.signature, '```', '');
+                }
+
+                if (doc.apiReference.parameters && doc.apiReference.parameters.length > 0) {
+                    lines.push('#### Parameters', '');
+                    for (const param of doc.apiReference.parameters) {
+                        lines.push(`- ${param}`);
+                    }
+                    lines.push('');
+                }
+
+                if (doc.apiReference.returns) {
+                    lines.push(`**Returns:** ${doc.apiReference.returns}`, '');
+                }
+
+                if (doc.apiReference.example) {
+                    lines.push('#### Example', '', '```', doc.apiReference.example, '```', '');
+                }
+            }
+
+            lines.push(doc.content.substring(0, 500), '');
+
+            if (doc.url) {
+                lines.push(`*See: ${doc.url}*`, '');
+            }
+
+            lines.push('---', '');
         }
-
-        lines.push('---', '');
     }
 
     return lines.join('\n');
+}
+
+/**
+ * Generate scripts directory with runnable scripts
+ * Format: scripts/helper.py
+ */
+function generateScriptsDirectory(codeBlocks: CodeBlock[]): SkillFile[] {
+    const files: SkillFile[] = [];
+    const scripts = codeBlocks.filter((cb) => cb.isScript && !cb.isTemplate);
+
+    if (scripts.length === 0) return files;
+
+    // Track used filenames to avoid duplicates
+    const usedNames = new Set<string>();
+
+    for (let i = 0; i < scripts.length; i++) {
+        const script = scripts[i];
+
+        // Generate filename: helper.py style
+        let filename = generateScriptFilename(script, i);
+
+        // Ensure uniqueness
+        const ext = filename.includes('.') ? filename.substring(filename.lastIndexOf('.')) : '.py';
+        let baseName = filename.replace(/\.[^.]+$/, '');
+        let counter = 1;
+        while (usedNames.has(filename)) {
+            filename = `${baseName}_${counter}${ext}`;
+            counter++;
+        }
+        usedNames.add(filename);
+
+        files.push({
+            path: `scripts/${filename}`,
+            content: script.code,
+            size: script.code.length,
+        });
+    }
+
+    return files;
+}
+
+/**
+ * Generate templates directory with template files
+ * Format: templates/template.txt
+ */
+function generateTemplatesDirectory(codeBlocks: CodeBlock[]): SkillFile[] {
+    const files: SkillFile[] = [];
+    const templates = codeBlocks.filter((cb) => cb.isTemplate);
+
+    if (templates.length === 0) return files;
+
+    // Track used filenames to avoid duplicates
+    const usedNames = new Set<string>();
+
+    for (let i = 0; i < templates.length; i++) {
+        const template = templates[i];
+
+        // Generate filename: template.txt style
+        let filename = generateTemplateFilename(template, i);
+
+        // Ensure uniqueness
+        let baseName = filename.replace(/\.txt$/, '');
+        let counter = 1;
+        while (usedNames.has(filename)) {
+            filename = `${baseName}_${counter}.txt`;
+            counter++;
+        }
+        usedNames.add(filename);
+
+        files.push({
+            path: `templates/${filename}`,
+            content: template.code,
+            size: template.code.length,
+        });
+    }
+
+    return files;
+}
+
+/**
+ * Generate script filename: helper.py style
+ */
+function generateScriptFilename(script: CodeBlock, index: number): string {
+    // Use simple name based on title or default to "helper"
+    const baseName = script.title
+        ? script.title.toLowerCase().replace(/[^a-z0-9]+/g, '_').substring(0, 20)
+        : `helper${index > 0 ? `_${index + 1}` : ''}`;
+
+    // Get extension based on language
+    const extMap: Record<string, string> = {
+        'python': '.py',
+        'javascript': '.js',
+        'typescript': '.ts',
+        'bash': '.sh',
+        'shell': '.sh',
+        'ruby': '.rb',
+        'go': '.go',
+        'rust': '.rs',
+        'java': '.java',
+    };
+
+    const ext = script.language ? (extMap[script.language] || '.py') : '.py';
+    return `${baseName}${ext}`;
+}
+
+/**
+ * Generate template filename: template.txt style
+ */
+function generateTemplateFilename(template: CodeBlock, index: number): string {
+    // Use simple name based on title or default to "template"
+    const baseName = template.title
+        ? template.title.toLowerCase().replace(/[^a-z0-9]+/g, '_').substring(0, 20)
+        : `template${index > 0 ? `_${index + 1}` : ''}`;
+
+    return `${baseName}.txt`;
 }
 
 /**

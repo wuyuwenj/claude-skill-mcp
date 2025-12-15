@@ -92,6 +92,7 @@ export interface DocPage {
     category?: string;
     apiReference?: ApiReference;
     codeExamples?: string[];
+    codeBlocks?: CodeBlock[];  // Enhanced code blocks with metadata
 }
 
 // API reference extracted from docs
@@ -101,6 +102,16 @@ export interface ApiReference {
     returns?: string;
     example?: string;
     deprecated?: boolean;
+}
+
+// Extracted code block with metadata
+export interface CodeBlock {
+    code: string;
+    language?: string;
+    filename?: string;
+    isScript: boolean;      // Complete runnable script
+    isTemplate: boolean;    // Contains placeholders like {{var}}, <YOUR_VALUE>, etc.
+    title?: string;         // From code block header or nearby heading
 }
 
 // GitHub repository data

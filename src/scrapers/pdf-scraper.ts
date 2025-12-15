@@ -4,7 +4,7 @@
  */
 
 import { createRequire } from 'module';
-import { Job, JobResult, PdfData, PdfSection, DocPage } from '../types.js';
+import { Job, JobResult, PdfData, PdfSection, DocPage, CodeBlock } from '../types.js';
 import { buildSkill } from '../skill-builder.js';
 
 // Use createRequire for CommonJS pdf-parse module
@@ -287,21 +287,206 @@ function convertPdfToDocPages(pdfData: PdfData, skillName: string): DocPage[] {
     for (const section of pdfData.sections) {
         if (section.content.length < 50) continue; // Skip very short sections
 
+        // Convert string code blocks to CodeBlock objects with metadata
+        const codeExamples = section.codeBlocks ?? [];
+        const codeBlocks = codeExamples.map((code, index) => convertToCodeBlock(code, section.title, index));
+
         docs.push({
             id: `docs-${docs.length + 1}`,
             source: skillName,
             title: section.title,
             content: formatSection(section),
             snippet: section.content.substring(0, 200) + '...',
-            type: section.codeBlocks && section.codeBlocks.length > 0 ? 'example' : 'guide',
+            type: codeExamples.length > 0 ? 'example' : 'guide',
             url: '',
             searchableText: `${section.title} ${section.content}`.toLowerCase(),
             category: 'content',
-            codeExamples: section.codeBlocks,
+            codeExamples,
+            codeBlocks,
         });
     }
 
     return docs;
+}
+
+/**
+ * Convert a code string to a CodeBlock with metadata
+ */
+function convertToCodeBlock(code: string, sectionTitle: string, index: number): CodeBlock {
+    // Try to detect language from code content
+    const language = detectLanguageFromCode(code);
+
+    // Generate filename
+    const filename = generateFilename(code, language, index);
+
+    // Detect if complete script
+    const isScript = isCompleteScript(code, language);
+
+    // Detect if template
+    const isTemplate = isTemplateCode(code);
+
+    return {
+        code,
+        language,
+        filename,
+        isScript,
+        isTemplate,
+        title: sectionTitle,
+    };
+}
+
+/**
+ * Detect programming language from code content
+ */
+function detectLanguageFromCode(code: string): string | undefined {
+    // Check shebang
+    if (code.startsWith('#!/usr/bin/env python') || code.startsWith('#!/usr/bin/python')) {
+        return 'python';
+    }
+    if (code.startsWith('#!/bin/bash') || code.startsWith('#!/bin/sh')) {
+        return 'bash';
+    }
+    if (code.startsWith('#!/usr/bin/env node')) {
+        return 'javascript';
+    }
+
+    // Python patterns
+    if (/^(def |class |import |from .+ import |if __name__|print\()/m.test(code)) {
+        return 'python';
+    }
+
+    // JavaScript/TypeScript patterns
+    if (/^(const |let |var |function |import |export |async function|=>)/m.test(code)) {
+        if (code.includes(': string') || code.includes(': number') || code.includes('interface ')) {
+            return 'typescript';
+        }
+        return 'javascript';
+    }
+
+    // Bash patterns
+    if (/^(#!\/|echo |export |if \[|for .+ in|while |done$|fi$)/m.test(code)) {
+        return 'bash';
+    }
+
+    // YAML patterns
+    if (/^[a-z_]+:\s*$/m.test(code) && code.includes(':')) {
+        return 'yaml';
+    }
+
+    // JSON patterns
+    if (/^\s*\{[\s\S]*\}\s*$/.test(code) || /^\s*\[[\s\S]*\]\s*$/.test(code)) {
+        try {
+            JSON.parse(code);
+            return 'json';
+        } catch {
+            // Not valid JSON
+        }
+    }
+
+    // SQL patterns
+    if (/^(SELECT |INSERT |UPDATE |DELETE |CREATE |ALTER |DROP )/mi.test(code)) {
+        return 'sql';
+    }
+
+    // Go patterns
+    if (/^(package |func |import \(|type .+ struct)/m.test(code)) {
+        return 'go';
+    }
+
+    // Rust patterns
+    if (/^(fn |let mut |impl |use |pub fn|struct )/m.test(code)) {
+        return 'rust';
+    }
+
+    // Java patterns
+    if (/^(public class |private |protected |import java\.)/m.test(code)) {
+        return 'java';
+    }
+
+    return undefined;
+}
+
+/**
+ * Generate filename based on code content and language
+ */
+function generateFilename(_code: string, language?: string, index?: number): string | undefined {
+    if (!language) return undefined;
+
+    const extMap: Record<string, string> = {
+        'python': '.py',
+        'javascript': '.js',
+        'typescript': '.ts',
+        'bash': '.sh',
+        'ruby': '.rb',
+        'go': '.go',
+        'rust': '.rs',
+        'java': '.java',
+        'yaml': '.yaml',
+        'json': '.json',
+        'sql': '.sql',
+    };
+
+    const ext = extMap[language];
+    if (!ext) return undefined;
+
+    const suffix = index !== undefined ? `_${index + 1}` : '';
+    return `script${suffix}${ext}`;
+}
+
+/**
+ * Determine if code is a complete runnable script
+ */
+function isCompleteScript(code: string, language?: string): boolean {
+    // Has shebang
+    if (code.startsWith('#!/')) return true;
+
+    // Python: has if __name__ == "__main__" or complete function definitions
+    if (language === 'python') {
+        if (code.includes('if __name__')) return true;
+        if (code.includes('def main(')) return true;
+        const defCount = (code.match(/^def \w+\(/gm) || []).length;
+        if (defCount >= 2) return true;
+    }
+
+    // Bash: has multiple commands
+    if (language === 'bash') {
+        const lines = code.split('\n').filter(l => l.trim() && !l.trim().startsWith('#'));
+        if (lines.length >= 5) return true;
+    }
+
+    // JavaScript/TypeScript: has exports
+    if (language === 'javascript' || language === 'typescript') {
+        if (code.includes('export ') || code.includes('module.exports')) return true;
+        if (code.includes('async function') && code.length > 200) return true;
+    }
+
+    // Code is long enough to be a complete script
+    if (code.split('\n').length >= 20) return true;
+
+    return false;
+}
+
+/**
+ * Detect if code contains template placeholders
+ */
+function isTemplateCode(code: string): boolean {
+    // Mustache/Handlebars style: {{variable}}
+    if (/\{\{[^}]+\}\}/.test(code)) return true;
+
+    // Jinja/Django style: {% %}
+    if (/\{%[^%]+%\}/.test(code)) return true;
+
+    // Placeholder patterns
+    if (/<[A-Z_]+>/.test(code)) return true;
+    if (/\[[A-Z_]+\]/.test(code)) return true;
+    if (/YOUR_[A-Z_]+/.test(code)) return true;
+    if (/\$\{[^}]+\}/.test(code)) return true;
+
+    // Config file patterns with placeholders
+    if (/: <[^>]+>/.test(code)) return true;
+    if (/= "<[^>]+"/.test(code)) return true;
+
+    return false;
 }
 
 /**

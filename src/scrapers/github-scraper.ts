@@ -5,7 +5,7 @@
 
 import { Octokit } from '@octokit/rest';
 import { log } from 'apify';
-import { Job, JobResult, GitHubRepoData, GitHubIssue, GitHubRelease, FileTreeNode, DocPage } from '../types.js';
+import { Job, JobResult, GitHubRepoData, GitHubIssue, GitHubRelease, FileTreeNode, DocPage, CodeBlock } from '../types.js';
 import { buildSkill } from '../skill-builder.js';
 
 /**
@@ -254,16 +254,19 @@ function convertToDocPages(repoData: GitHubRepoData, skillName: string): DocPage
 
     // README as main page
     if (repoData.readme) {
+        const { codeExamples, codeBlocks } = extractCodeBlocksFromMarkdown(repoData.readme);
         docs.push({
             id: 'docs-1',
             source: skillName,
             title: `${repoData.name} - README`,
             content: repoData.readme,
             snippet: repoData.readme.substring(0, 200) + '...',
-            type: 'guide',
+            type: codeExamples.length > 0 ? 'example' : 'guide',
             url: `https://github.com/${repoData.fullName}`,
             searchableText: `${repoData.name} readme ${repoData.readme}`.toLowerCase(),
             category: 'overview',
+            codeExamples,
+            codeBlocks,
         });
     }
 
@@ -300,63 +303,78 @@ function convertToDocPages(repoData: GitHubRepoData, skillName: string): DocPage
         // Open issues
         const openIssues = repoData.issues.filter((i) => i.state === 'open');
         if (openIssues.length > 0) {
+            const openContent = openIssues.map(i => i.body).join('\n\n');
+            const { codeExamples, codeBlocks } = extractCodeBlocksFromMarkdown(openContent);
             docs.push({
                 id: `docs-${docs.length + 1}`,
                 source: skillName,
                 title: `${repoData.name} - Open Issues`,
                 content: formatIssues(openIssues),
                 snippet: `${openIssues.length} open issues`,
-                type: 'guide',
+                type: codeExamples.length > 0 ? 'example' : 'guide',
                 url: `https://github.com/${repoData.fullName}/issues`,
                 searchableText: openIssues.map((i) => i.title).join(' ').toLowerCase(),
                 category: 'issues',
+                codeExamples,
+                codeBlocks,
             });
         }
 
         // Recent closed issues (for context)
         const closedIssues = repoData.issues.filter((i) => i.state === 'closed').slice(0, 20);
         if (closedIssues.length > 0) {
+            const closedContent = closedIssues.map(i => i.body).join('\n\n');
+            const { codeExamples, codeBlocks } = extractCodeBlocksFromMarkdown(closedContent);
             docs.push({
                 id: `docs-${docs.length + 1}`,
                 source: skillName,
                 title: `${repoData.name} - Recently Closed Issues`,
                 content: formatIssues(closedIssues),
                 snippet: `${closedIssues.length} recently closed issues`,
-                type: 'guide',
+                type: codeExamples.length > 0 ? 'example' : 'guide',
                 url: `https://github.com/${repoData.fullName}/issues?q=is%3Aclosed`,
                 searchableText: closedIssues.map((i) => i.title).join(' ').toLowerCase(),
                 category: 'issues',
+                codeExamples,
+                codeBlocks,
             });
         }
     }
 
     // Releases
     if (repoData.releases.length > 0) {
+        const releaseContent = repoData.releases.map(r => r.body).join('\n\n');
+        const { codeExamples, codeBlocks } = extractCodeBlocksFromMarkdown(releaseContent);
         docs.push({
             id: `docs-${docs.length + 1}`,
             source: skillName,
             title: `${repoData.name} - Releases`,
             content: formatReleases(repoData.releases),
             snippet: `${repoData.releases.length} releases`,
-            type: 'guide',
+            type: codeExamples.length > 0 ? 'example' : 'guide',
             url: `https://github.com/${repoData.fullName}/releases`,
             searchableText: repoData.releases.map((r) => `${r.name} ${r.body}`).join(' ').toLowerCase(),
             category: 'releases',
+            codeExamples,
+            codeBlocks,
         });
     }
 
     // Changelog
     if (repoData.changelog) {
+        const { codeExamples, codeBlocks } = extractCodeBlocksFromMarkdown(repoData.changelog);
         docs.push({
             id: `docs-${docs.length + 1}`,
             source: skillName,
             title: `${repoData.name} - Changelog`,
             content: repoData.changelog,
             snippet: 'Project changelog and version history',
-            type: 'guide',
+            type: codeExamples.length > 0 ? 'example' : 'guide',
             url: `https://github.com/${repoData.fullName}/blob/main/CHANGELOG.md`,
             searchableText: `${repoData.name} changelog history ${repoData.changelog}`.toLowerCase(),
             category: 'releases',
+            codeExamples,
+            codeBlocks,
         });
     }
 
@@ -456,4 +474,172 @@ function formatReleases(releases: GitHubRelease[]): string {
     }
 
     return lines.join('\n');
+}
+
+/**
+ * Extract code blocks from markdown content
+ */
+function extractCodeBlocksFromMarkdown(content: string): { codeExamples: string[]; codeBlocks: CodeBlock[] } {
+    const codeExamples: string[] = [];
+    const codeBlocks: CodeBlock[] = [];
+
+    // Match fenced code blocks: ```language\ncode\n```
+    const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
+    let match;
+
+    while ((match = codeBlockRegex.exec(content)) !== null) {
+        const language = match[1] || undefined;
+        const code = match[2].trim();
+
+        if (code.length < 10) continue;
+
+        codeExamples.push(code);
+
+        // Detect if complete script
+        const isScript = isCompleteScript(code, language);
+
+        // Detect if template
+        const isTemplate = isTemplateCode(code);
+
+        // Generate filename
+        const filename = generateFilename(code, language);
+
+        // Find title from context (line before code block)
+        const beforeBlock = content.substring(0, match.index);
+        const lines = beforeBlock.split('\n');
+        let title: string | undefined;
+        for (let i = lines.length - 1; i >= Math.max(0, lines.length - 3); i--) {
+            const line = lines[i].trim();
+            if (line.startsWith('#')) {
+                title = line.replace(/^#+\s*/, '');
+                break;
+            }
+        }
+
+        codeBlocks.push({
+            code,
+            language: normalizeLanguage(language),
+            filename,
+            isScript,
+            isTemplate,
+            title,
+        });
+    }
+
+    return { codeExamples, codeBlocks };
+}
+
+/**
+ * Normalize language name
+ */
+function normalizeLanguage(lang?: string): string | undefined {
+    if (!lang) return undefined;
+
+    const langMap: Record<string, string> = {
+        'py': 'python',
+        'js': 'javascript',
+        'ts': 'typescript',
+        'sh': 'bash',
+        'shell': 'bash',
+        'zsh': 'bash',
+        'yml': 'yaml',
+        'dockerfile': 'docker',
+    };
+
+    return langMap[lang.toLowerCase()] || lang.toLowerCase();
+}
+
+/**
+ * Generate filename based on code content and language
+ */
+function generateFilename(code: string, language?: string): string | undefined {
+    // Check for shebang
+    if (code.startsWith('#!/')) {
+        if (code.includes('/python')) return 'script.py';
+        if (code.includes('/bash') || code.includes('/sh')) return 'script.sh';
+        if (code.includes('/node')) return 'script.js';
+    }
+
+    if (!language) return undefined;
+
+    const extMap: Record<string, string> = {
+        'python': '.py',
+        'py': '.py',
+        'javascript': '.js',
+        'js': '.js',
+        'typescript': '.ts',
+        'ts': '.ts',
+        'bash': '.sh',
+        'sh': '.sh',
+        'shell': '.sh',
+        'ruby': '.rb',
+        'go': '.go',
+        'rust': '.rs',
+        'java': '.java',
+        'yaml': '.yaml',
+        'yml': '.yaml',
+        'json': '.json',
+        'dockerfile': 'Dockerfile',
+    };
+
+    const ext = extMap[language.toLowerCase()];
+    return ext ? `script${ext}` : undefined;
+}
+
+/**
+ * Determine if code is a complete runnable script
+ */
+function isCompleteScript(code: string, language?: string): boolean {
+    // Has shebang
+    if (code.startsWith('#!/')) return true;
+
+    const lang = language?.toLowerCase();
+
+    // Python: has if __name__ == "__main__" or complete function definitions
+    if (lang === 'python' || lang === 'py') {
+        if (code.includes('if __name__')) return true;
+        if (code.includes('def main(')) return true;
+        const defCount = (code.match(/^def \w+\(/gm) || []).length;
+        if (defCount >= 2) return true;
+    }
+
+    // Bash: has multiple commands or function definitions
+    if (lang === 'bash' || lang === 'sh' || lang === 'shell') {
+        const lines = code.split('\n').filter(l => l.trim() && !l.trim().startsWith('#'));
+        if (lines.length >= 5) return true;
+    }
+
+    // JavaScript/TypeScript: has exports or is a complete module
+    if (lang === 'javascript' || lang === 'js' || lang === 'typescript' || lang === 'ts') {
+        if (code.includes('export ') || code.includes('module.exports')) return true;
+        if (code.includes('async function') && code.length > 200) return true;
+    }
+
+    // Code is long enough to be a complete script
+    if (code.split('\n').length >= 20) return true;
+
+    return false;
+}
+
+/**
+ * Detect if code contains template placeholders
+ */
+function isTemplateCode(code: string): boolean {
+    // Mustache/Handlebars style: {{variable}}
+    if (/\{\{[^}]+\}\}/.test(code)) return true;
+
+    // Jinja/Django style: {% %}
+    if (/\{%[^%]+%\}/.test(code)) return true;
+
+    // Placeholder patterns: <YOUR_VALUE>, [YOUR_VALUE], YOUR_API_KEY, etc.
+    if (/<[A-Z_]+>/.test(code)) return true;
+    if (/\[[A-Z_]+\]/.test(code)) return true;
+    if (/YOUR_[A-Z_]+/.test(code)) return true;
+    if (/\$\{[^}]+\}/.test(code)) return true;
+
+    // Config file patterns with placeholders
+    if (/: <[^>]+>/.test(code)) return true;
+    if (/= "<[^>]+"/.test(code)) return true;
+
+    return false;
 }
